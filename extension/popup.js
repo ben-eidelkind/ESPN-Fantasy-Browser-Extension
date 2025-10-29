@@ -22,6 +22,10 @@ let supabaseConfig = {
   supabaseTable: "espn_syncs"
 };
 
+const WRONG_HOST_MESSAGE = "Open your league or team page on fantasy.espn.com, then retry.";
+const NOT_LOGGED_IN_MESSAGE = "Log into https://www.espn.com/, refresh your fantasy page, then retry.";
+const GENERIC_NETWORK_MESSAGE = "Network error. Temporarily disable blockers and try again.";
+
 function getDefaultSeason() {
   const now = new Date();
   const year = now.getFullYear();
@@ -35,6 +39,10 @@ function logStatus(message, type = "info") {
   entry.textContent = `[${timestamp}] ${message}`;
   statusLog.appendChild(entry);
   statusLog.scrollTop = statusLog.scrollHeight;
+}
+
+function clearStatusLog() {
+  statusLog.textContent = "";
 }
 
 function updateActionButtons() {
@@ -87,38 +95,45 @@ function sendMessage(message) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
       }
-      if (!response) {
+      if (response === undefined) {
         reject(new Error("No response from background."));
         return;
       }
-      if (response.ok) {
-        resolve(response);
-      } else {
-        const error = new Error(response.message || response.error || "Unknown error");
-        error.code = response.code;
-        error.details = response.details;
-        error.hint = response.hint;
-        error.status = response.status;
-        reject(error);
-      }
+      resolve(response);
     });
   });
 }
 
-function getFriendlyErrorMessage(error, fallback) {
-  if (!error) {
-    return fallback || "Unexpected error.";
+function getStructuredErrorMessage(response) {
+  if (!response || typeof response !== "object") {
+    return GENERIC_NETWORK_MESSAGE;
   }
-  if (error.code === "WRONG_HOST") {
-    return "Open your league or team page on fantasy.espn.com, then retry.";
+  if (response.code === "WRONG_HOST") {
+    return WRONG_HOST_MESSAGE;
   }
-  if (error.code === "NOT_LOGGED_IN") {
-    return "Log into https://www.espn.com/, refresh the fantasy page, then retry.";
+  if (response.code === "NOT_LOGGED_IN") {
+    return NOT_LOGGED_IN_MESSAGE;
   }
-  if (error.message) {
-    return error.message;
+  if (response.code === "HTTP_ERROR" && response.status) {
+    const statusText = response.statusText ? ` ${response.statusText}` : "";
+    return `HTTP ${response.status}${statusText}`;
   }
-  return fallback || "Unexpected error.";
+  return GENERIC_NETWORK_MESSAGE;
+}
+
+function logFailureDetails(failures) {
+  if (!Array.isArray(failures) || !failures.length) {
+    return;
+  }
+  failures.forEach((failure) => {
+    const viewLabel = failure?.view ? `${failure.view}: ` : "";
+    if (failure?.code === "HTTP_ERROR" && failure.status) {
+      const statusText = failure.statusText ? ` ${failure.statusText}` : "";
+      logStatus(`Failed ${viewLabel}HTTP ${failure.status}${statusText}`, "error");
+      return;
+    }
+    logStatus(`Failed ${viewLabel}${failure?.code || "UNKNOWN_ERROR"}`, "error");
+  });
 }
 
 async function detectLeagueIdFromTab() {
@@ -206,60 +221,89 @@ async function handleDetectClick() {
 }
 
 async function handleTestConnection() {
+  clearStatusLog();
+  let leagueId;
+  let season;
   try {
-    const { leagueId, season } = validateInputs();
-    logStatus("Testing ESPN connection...");
-    const result = await sendMessage({ type: "testConnection", leagueId, season });
-    const statusMessage =
-      result.path === "content-script" ? "OK (in-page fetch)" : "OK (cookie auth)";
-    const name = result.settingsName ? ` – League: ${result.settingsName}` : "";
-    logStatus(`${statusMessage}${name}.`, "success");
+    ({ leagueId, season } = validateInputs());
   } catch (error) {
-    const message = getFriendlyErrorMessage(error, "Failed to test ESPN connection.");
+    logStatus(error.message, "error");
+    return;
+  }
+
+  try {
+    logStatus("Testing ESPN connection...");
+    const response = await sendMessage({
+      type: "background.testConnection",
+      leagueId,
+      season
+    });
+    if (response?.ok) {
+      logStatus("OK (in-page fetch).", "success");
+      return;
+    }
+    const message = getStructuredErrorMessage(response);
     logStatus(message, "error");
-    if (error.hint && error.hint !== message) {
-      logStatus(error.hint, "info");
-    }
-    if (error.details) {
-      console.error("Test connection details", error.details);
-    }
+  } catch (error) {
+    console.error("Test connection failed", error);
+    logStatus(GENERIC_NETWORK_MESSAGE, "error");
   }
 }
 
 async function handleFetch() {
+  let leagueId;
+  let season;
   try {
-    const { leagueId, season } = validateInputs();
+    ({ leagueId, season } = validateInputs());
+  } catch (error) {
+    logStatus(error.message, "error");
+    return;
+  }
+
+  try {
     await storageSet({ leagueId, season });
     logStatus("Fetching league data from ESPN...");
     const response = await sendMessage({
-      type: "fetchData",
+      type: "background.fetchBundle",
       leagueId,
       season,
       includeRaw: includeRawInput.checked
     });
-    const { normalized, summary } = response.data;
+
+    if (!response?.ok) {
+      currentNormalized = null;
+      renderPreview();
+      updateActionButtons();
+      const message = getStructuredErrorMessage(response);
+      logStatus(message, "error");
+      logFailureDetails(response?.failures);
+      return;
+    }
+
+    const normalized = response.data;
+    const summary = normalized?.meta?.summary || {
+      teamCount: 0,
+      totalRosteredPlayers: 0,
+      matchupCount: 0
+    };
     currentNormalized = normalized;
     previewExpanded = false;
     renderPreview();
     updateActionButtons();
-    const statusMessage =
-      response.path === "content-script" ? "in-page fetch" : "cookie auth";
     logStatus(
-      `Fetched data (${statusMessage}). Teams: ${summary.teamCount}, players: ${summary.totalRosteredPlayers}, matchups: ${summary.matchupCount}.`,
+      `Fetched data (in-page fetch). Teams: ${summary.teamCount}, players: ${summary.totalRosteredPlayers}, matchups: ${summary.matchupCount}.`,
       "success"
     );
+    if (Array.isArray(response.failures) && response.failures.length) {
+      logStatus(`Partial failures: ${response.failures.length}`, "info");
+      logFailureDetails(response.failures);
+    }
   } catch (error) {
+    console.error("Fetch failed", error);
     currentNormalized = null;
     renderPreview();
     updateActionButtons();
-    const message = getFriendlyErrorMessage(error, "Failed to fetch data from ESPN.");
-    logStatus(message, "error");
-    if (error.hint && error.hint !== message) {
-      logStatus(error.hint, "info");
-    }
-    if (error.details) {
-      console.error("Fetch details", error.details);
-    }
+    logStatus(GENERIC_NETWORK_MESSAGE, "error");
   }
 }
 
@@ -284,13 +328,18 @@ async function handleSync() {
   }
   try {
     logStatus("Syncing to Supabase...");
-    await sendMessage({
+    const response = await sendMessage({
       type: "syncSupabase",
       normalized: currentNormalized,
       supabaseUrl: supabaseConfig.supabaseUrl,
       supabaseAnonKey: supabaseConfig.supabaseAnonKey,
       supabaseTable: supabaseConfig.supabaseTable || "espn_syncs"
     });
+    if (!response?.ok) {
+      const error = new Error(response?.message || "Supabase sync failed.");
+      error.details = response?.details;
+      throw error;
+    }
     logStatus("Supabase sync complete.", "success");
   } catch (error) {
     logStatus(error.message, "error");
