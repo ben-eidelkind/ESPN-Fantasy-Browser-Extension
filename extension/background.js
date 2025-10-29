@@ -17,12 +17,12 @@ async function getActiveFantasyTab() {
 // Send message to TOP FRAME (frameId: 0) first; fall back if needed.
 async function csFetchJson(tabId, urls) {
   // Try top frame
-  const topResp = await new Promise((resolve) => {
+  const respTop = await new Promise((resolve) => {
     chrome.tabs.sendMessage(
       tabId,
       { type: "cs.fetchJson", urls },
       { frameId: 0 },
-      (resp) => {
+      (response) => {
         if (chrome.runtime.lastError) {
           return resolve({
             ok: false,
@@ -30,15 +30,15 @@ async function csFetchJson(tabId, urls) {
             message: chrome.runtime.lastError.message
           });
         }
-        resolve(resp);
+        resolve(response);
       }
     );
   });
-  if (topResp) return topResp;
+  if (respTop) return respTop;
 
   // Fallback default routing
   return await new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, { type: "cs.fetchJson", urls }, (resp) => {
+    chrome.tabs.sendMessage(tabId, { type: "cs.fetchJson", urls }, (response) => {
       if (chrome.runtime.lastError) {
         return resolve({
           ok: false,
@@ -46,7 +46,7 @@ async function csFetchJson(tabId, urls) {
           message: chrome.runtime.lastError.message
         });
       }
-      resolve(resp || { ok: false, code: "CS_ERROR", message: "No response from content script." });
+      resolve(response || { ok: false, code: "CS_ERROR", message: "No response from content script." });
     });
   });
 }
@@ -148,7 +148,6 @@ async function fetchLeagueBundle(leagueId, season, includeRaw) {
 
   // if ALL failed with network, bubble up a single error
   if (failures.length === views.length) {
-    // If at least one is 401/403, treat as not logged in
     const authErr = failures.find(f => f.code === "HTTP_ERROR" && (f.status === 401 || f.status === 403));
     if (authErr) return { ok: false, code: "NOT_LOGGED_IN", hint: "Log into https://www.espn.com/, refresh the fantasy page, then retry." };
     return { ok: false, code: "NETWORK_ERROR", failures };
