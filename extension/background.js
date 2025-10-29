@@ -17,37 +17,52 @@ const STATUS_MESSAGES = {
 };
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const handler = async () => {
-    switch (message.type) {
-      case "getEspnAuth":
-        return await getEspnAuth();
-      case "testConnection":
-        return await testConnection(message);
-      case "fetchData":
-        return await fetchAndNormalize(message);
-      case "syncSupabase":
-        return await syncToSupabase(message);
-      default:
-        throw new Error(`Unknown message type: ${message.type}`);
-    }
-  };
-
-  handler()
-    .then((data) => {
-      if (message.type === "getEspnAuth") {
-        sendResponse(data);
-        return;
+  (async () => {
+    try {
+      let result;
+      switch (message.type) {
+        case "getEspnAuth":
+          result = await getEspnAuth();
+          break;
+        case "testConnection":
+          result = await testConnection(message);
+          break;
+        case "fetchData":
+          result = await fetchAndNormalize(message);
+          break;
+        case "syncSupabase":
+          result = await syncToSupabase(message);
+          break;
+        default:
+          result = {
+            ok: false,
+            code: "UNKNOWN_REQUEST",
+            message: `Unknown message type: ${message.type}`
+          };
+          break;
       }
-      sendResponse({ ok: true, data });
-    })
-    .catch((error) => {
+      if (result?.ok === undefined) {
+        result = { ok: true, data: result };
+      }
+      sendResponse(result);
+    } catch (error) {
       console.error("ESPN Fantasy Exporter error", error);
-      sendResponse({
+      const response = {
         ok: false,
-        error: error.message || "Unexpected error",
-        details: error.details || null
-      });
-    });
+        message: error.message || "Unexpected error"
+      };
+      if (error.code) {
+        response.code = error.code;
+      }
+      if (error.details) {
+        response.details = error.details;
+      }
+      if (error.hint) {
+        response.hint = error.hint;
+      }
+      sendResponse(response);
+    }
+  })();
   return true;
 });
 
@@ -120,23 +135,6 @@ async function getEspnAuth() {
   return { ok: true, swid, s2 };
 }
 
-async function requireEspnAuth() {
-  const auth = await getEspnAuth();
-  if (auth.ok) {
-    return auth;
-  }
-
-  const error =
-    auth.code === "NO_PERMISSION"
-      ? new Error("Permission to read ESPN cookies is required.")
-      : new Error(auth.hint || "Missing ESPN authentication cookies.");
-  error.code = auth.code;
-  if (auth.hint) {
-    error.details = auth.hint;
-  }
-  throw error;
-}
-
 function buildEspnUrl(leagueId, season, views) {
   const params = views.map((view) => `view=${view}`).join("&");
   return `https://fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}?${params}`;
@@ -148,6 +146,7 @@ async function wait(ms) {
 
 async function fetchWithRetry(url, options, retries = 3, baseDelay = 400) {
   let attempt = 0;
+  // eslint-disable-next-line no-constant-condition
   while (true) {
     let response;
     try {
@@ -177,43 +176,242 @@ async function fetchWithRetry(url, options, retries = 3, baseDelay = 400) {
   }
 }
 
-async function fetchLeaguePayload(leagueId, season, includeViews = ESPN_VIEWS) {
-  const { swid, s2 } = await requireEspnAuth();
-  const url = buildEspnUrl(leagueId, season, includeViews);
-  const response = await fetchWithRetry(url, {
-    headers: {
-      Cookie: `SWID=${swid}; espn_s2=${s2}`
-    },
-    credentials: "include"
+async function getActiveTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
+function isFantasyTab(tab) {
+  return Boolean(tab?.url && tab.url.startsWith("https://fantasy.espn.com/"));
+}
+
+async function fetchEspnViaContentScript(tabId, url) {
+  return await new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { type: "cs.fetchEspn", url }, (resp) => {
+      if (chrome.runtime.lastError) {
+        return resolve({
+          ok: false,
+          code: "CS_MESSAGING_ERROR",
+          message: chrome.runtime.lastError.message
+        });
+      }
+      resolve(resp);
+    });
   });
+}
+
+function mergeViewData(target, source) {
+  if (!source || typeof source !== "object") {
+    return target;
+  }
+  Object.entries(source).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      target[key] = value;
+      return;
+    }
+    if (value && typeof value === "object") {
+      const current = target[key];
+      const base =
+        current && typeof current === "object" && !Array.isArray(current)
+          ? current
+          : {};
+      target[key] = mergeViewData(base, value);
+      return;
+    }
+    target[key] = value;
+  });
+  return target;
+}
+
+function statusMessageFromResponse(status, statusText) {
+  if (!status) {
+    return "Unexpected response from ESPN.";
+  }
+  return (
+    STATUS_MESSAGES[status] ||
+    `ESPN responded with status ${status}${statusText ? ` ${statusText}` : ""}.`
+  );
+}
+
+function isUnauthorizedStatus(status) {
+  return status === 401 || status === 403;
+}
+
+async function fetchEspnJsonWithCookies(url, auth) {
+  let response;
+  try {
+    response = await fetchWithRetry(url, {
+      headers: {
+        Cookie: `SWID=${auth.swid}; espn_s2=${auth.s2}`,
+        Accept: "application/json"
+      },
+      credentials: "include"
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      code: "NETWORK_ERROR",
+      message: error.message || "Network error while contacting ESPN.",
+      details: error.details
+    };
+  }
 
   if (!response.ok) {
-    const text = await response.text();
-    const message = STATUS_MESSAGES[response.status] || `ESPN responded with status ${response.status}.`;
-    const error = new Error(message);
-    error.details = text;
-    error.status = response.status;
-    throw error;
+    return {
+      ok: false,
+      code: "HTTP_ERROR",
+      status: response.status,
+      statusText: response.statusText,
+      message: statusMessageFromResponse(response.status, response.statusText)
+    };
   }
 
   try {
-    return await response.json();
+    const data = await response.json();
+    return { ok: true, data, path: "cookies" };
   } catch (err) {
-    const error = new Error("Failed to parse ESPN response JSON.");
-    error.details = err.message;
-    throw error;
+    return {
+      ok: false,
+      code: "PARSE_ERROR",
+      message: "Failed to parse ESPN response JSON.",
+      details: err.message
+    };
   }
+}
+
+async function fetchViewsViaContentScript(tabId, leagueId, season, views) {
+  const aggregate = {};
+  for (const view of views) {
+    const url = buildEspnUrl(leagueId, season, [view]);
+    const resp = await fetchEspnViaContentScript(tabId, url);
+    if (!resp) {
+      return {
+        ok: false,
+        code: "CS_NO_RESPONSE",
+        message: "No response from content script."
+      };
+    }
+    if (!resp.ok) {
+      return resp;
+    }
+    mergeViewData(aggregate, resp.data);
+  }
+  return { ok: true, data: aggregate, path: "content-script" };
+}
+
+async function fetchLeaguePayload(leagueId, season, includeViews = ESPN_VIEWS) {
+  const views = Array.isArray(includeViews) ? includeViews : [includeViews];
+  const combinedUrl = buildEspnUrl(leagueId, season, views);
+
+  const auth = await getEspnAuth();
+  let shouldFallback = false;
+
+  if (auth?.ok) {
+    const cookieResult = await fetchEspnJsonWithCookies(combinedUrl, auth);
+    if (cookieResult.ok) {
+      return cookieResult;
+    }
+    if (cookieResult.code === "HTTP_ERROR" && isUnauthorizedStatus(cookieResult.status)) {
+      shouldFallback = true;
+    } else {
+      return cookieResult;
+    }
+  } else if (auth?.code === "MISSING_COOKIES") {
+    shouldFallback = true;
+  } else if (auth?.code) {
+    return {
+      ok: false,
+      code: auth.code,
+      message: auth.hint || "Unable to access ESPN authentication cookies.",
+      hint: auth.hint
+    };
+  } else {
+    return {
+      ok: false,
+      code: "UNKNOWN_AUTH",
+      message: "Unable to read ESPN authentication cookies."
+    };
+  }
+
+  if (!shouldFallback) {
+    return {
+      ok: false,
+      code: "FETCH_ABORTED",
+      message: "Unable to fetch ESPN data."
+    };
+  }
+
+  const tab = await getActiveTab();
+  if (!isFantasyTab(tab)) {
+    const message = "Open your fantasy.espn.com league or team page and try again.";
+    return {
+      ok: false,
+      code: "WRONG_HOST",
+      message,
+      hint: message
+    };
+  }
+
+  const csResult = await fetchViewsViaContentScript(tab.id, leagueId, season, views);
+  if (!csResult) {
+    return {
+      ok: false,
+      code: "CS_NO_RESPONSE",
+      message: "No response from content script."
+    };
+  }
+  if (csResult.ok) {
+    return csResult;
+  }
+
+  if (csResult.code === "HTTP_ERROR" && isUnauthorizedStatus(csResult.status)) {
+    const message = "Log into https://www.espn.com/, refresh the fantasy page, then retry.";
+    return {
+      ok: false,
+      code: "NOT_LOGGED_IN",
+      message,
+      hint: message,
+      status: csResult.status,
+      statusText: csResult.statusText
+    };
+  }
+
+  if (csResult.code === "HTTP_ERROR" && csResult.status) {
+    return {
+      ok: false,
+      code: csResult.code,
+      status: csResult.status,
+      statusText: csResult.statusText,
+      message: statusMessageFromResponse(csResult.status, csResult.statusText)
+    };
+  }
+
+  return csResult;
 }
 
 async function testConnection({ leagueId, season }) {
   if (!leagueId) {
-    throw new Error("League ID is required to test the connection.");
+    return {
+      ok: false,
+      code: "MISSING_LEAGUE",
+      message: "League ID is required to test the connection."
+    };
   }
-  const data = await fetchLeaguePayload(leagueId, season, ["mSettings"]);
-  return {
-    ok: true,
-    settingsName: data?.settings?.name || null
-  };
+  if (!season) {
+    return {
+      ok: false,
+      code: "MISSING_SEASON",
+      message: "Season is required to test the connection."
+    };
+  }
+
+  const result = await fetchLeaguePayload(leagueId, season, ["mSettings"]);
+  if (!result.ok) {
+    return result;
+  }
+
+  const settingsName = result.data?.settings?.name || null;
+  return { ok: true, path: result.path, settingsName };
 }
 
 function normalizeLeagueData(rawData, { leagueId, season }, includeRaw) {
@@ -260,13 +458,18 @@ function normalizeLeagueData(rawData, { leagueId, season }, includeRaw) {
 
 async function fetchAndNormalize({ leagueId, season, includeRaw }) {
   if (!leagueId) {
-    throw new Error("League ID is required.");
+    return { ok: false, code: "MISSING_LEAGUE", message: "League ID is required." };
   }
   if (!season) {
-    throw new Error("Season is required.");
+    return { ok: false, code: "MISSING_SEASON", message: "Season is required." };
   }
 
-  const rawData = await fetchLeaguePayload(leagueId, season, ESPN_VIEWS);
+  const result = await fetchLeaguePayload(leagueId, season, ESPN_VIEWS);
+  if (!result.ok) {
+    return result;
+  }
+
+  const rawData = result.data;
   const normalized = normalizeLeagueData(rawData, { leagueId, season }, includeRaw);
   await chrome.storage.local.set({
     leagueId,
@@ -274,8 +477,12 @@ async function fetchAndNormalize({ leagueId, season, includeRaw }) {
     lastSummary: normalized.meta.summary
   });
   return {
-    normalized,
-    summary: normalized.meta.summary
+    ok: true,
+    path: result.path,
+    data: {
+      normalized,
+      summary: normalized.meta.summary
+    }
   };
 }
 
@@ -332,6 +539,9 @@ async function syncToSupabase({ normalized, supabaseUrl, supabaseAnonKey, supaba
   });
 
   return {
-    response: result
+    ok: true,
+    data: {
+      response: result
+    }
   };
 }

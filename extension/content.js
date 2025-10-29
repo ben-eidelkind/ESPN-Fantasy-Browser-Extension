@@ -1,52 +1,34 @@
-function extractLeagueIdFromUrl(url) {
-  try {
-    const parsed = new URL(url, window.location.origin);
-    const id = parsed.searchParams.get("leagueId");
-    if (id && /^\d+$/.test(id)) {
-      return id;
+// content.js
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+      if (msg?.type === "detectLeagueId") {
+        const m = String(location.href).match(/[?&#]leagueId=(\d+)/);
+        if (m) return sendResponse({ ok: true, leagueId: m[1] });
+        return sendResponse({ ok: false, error: "NO_LEAGUE_ID" });
+      }
+      if (msg?.type === "cs.fetchEspn") {
+        try {
+          const u = new URL(msg.url);
+          if (u.origin !== location.origin) {
+            return sendResponse({ ok: false, code: "CROSS_ORIGIN", message: "URL origin mismatch" });
+          }
+          const res = await fetch(u.toString(), {
+            credentials: "include",
+            headers: { Accept: "application/json" }
+          });
+          if (!res.ok) {
+            return sendResponse({ ok: false, code: "HTTP_ERROR", status: res.status, statusText: res.statusText });
+          }
+          const data = await res.json();
+          return sendResponse({ ok: true, data, path: "content-script" });
+        } catch (e) {
+          return sendResponse({ ok: false, code: "FETCH_ERROR", message: String(e) });
+        }
+      }
+    } catch (e) {
+      sendResponse({ ok: false, code: "UNEXPECTED", message: String(e) });
     }
-  } catch (err) {
-    // ignore
-  }
-  return null;
-}
-
-function extractLeagueIdFromDom() {
-  const attributeElement = document.querySelector('[data-leagueid], [data-league-id]');
-  if (attributeElement) {
-    const id = attributeElement.getAttribute("data-leagueid") || attributeElement.getAttribute("data-league-id");
-    if (id && /^\d+$/.test(id)) {
-      return id;
-    }
-  }
-
-  const textMatches = document.body.innerText.match(/leagueId\s*[:=]\s*(\d{3,})/i);
-  if (textMatches && textMatches[1]) {
-    return textMatches[1];
-  }
-
-  const scripts = Array.from(document.scripts);
-  for (const script of scripts) {
-    const content = script.textContent || "";
-    const match = content.match(/"leagueId"\s*:\s*(\d{3,})/);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-
-  return null;
-}
-
-function detectLeagueId() {
-  return (
-    extractLeagueIdFromUrl(window.location.href) ||
-    extractLeagueIdFromDom()
-  );
-}
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "detectLeagueId") {
-    const leagueId = detectLeagueId();
-    sendResponse({ leagueId });
-  }
+  })();
+  return true; // async
 });

@@ -80,8 +80,7 @@ function storageSet(values) {
   });
 }
 
-function sendMessage(message, options = {}) {
-  const { raw = false } = options;
+function sendMessage(message) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
@@ -92,19 +91,34 @@ function sendMessage(message, options = {}) {
         reject(new Error("No response from background."));
         return;
       }
-      if (raw) {
-        resolve(response);
-        return;
-      }
       if (response.ok) {
-        resolve(response.data);
+        resolve(response);
       } else {
-        const error = new Error(response.error || "Unknown error");
+        const error = new Error(response.message || response.error || "Unknown error");
+        error.code = response.code;
         error.details = response.details;
+        error.hint = response.hint;
+        error.status = response.status;
         reject(error);
       }
     });
   });
+}
+
+function getFriendlyErrorMessage(error, fallback) {
+  if (!error) {
+    return fallback || "Unexpected error.";
+  }
+  if (error.code === "WRONG_HOST") {
+    return "Open your league or team page on fantasy.espn.com, then retry.";
+  }
+  if (error.code === "NOT_LOGGED_IN") {
+    return "Log into https://www.espn.com/, refresh the fantasy page, then retry.";
+  }
+  if (error.message) {
+    return error.message;
+  }
+  return fallback || "Unexpected error.";
 }
 
 async function detectLeagueIdFromTab() {
@@ -195,36 +209,17 @@ async function handleTestConnection() {
   try {
     const { leagueId, season } = validateInputs();
     logStatus("Testing ESPN connection...");
-    const auth = await sendMessage({ type: "getEspnAuth" }, { raw: true });
-    if (!auth) {
-      logStatus("Unable to verify ESPN authentication cookies.", "error");
-      return;
-    }
-    if (!auth.ok) {
-      if (auth.code === "MISSING_COOKIES") {
-        logStatus(
-          "Missing SWID/espn_s2. Log into https://www.espn.com/ (top-right login), then refresh your fantasy page and try again.",
-          "error"
-        );
-        return;
-      }
-      if (auth.code === "NO_PERMISSION") {
-        logStatus("Permission needed. Click 'Allow' when prompted, then try again.", "error");
-        return;
-      }
-      if (auth.error) {
-        logStatus(auth.error, "error");
-        return;
-      }
-      logStatus("Unable to verify ESPN authentication cookies.", "error");
-      return;
-    }
-
     const result = await sendMessage({ type: "testConnection", leagueId, season });
-    const name = result?.settingsName ? ` (League: ${result.settingsName})` : "";
-    logStatus(`ESPN connection OK${name}.`, "success");
+    const statusMessage =
+      result.path === "content-script" ? "OK (in-page fetch)" : "OK (cookie auth)";
+    const name = result.settingsName ? ` – League: ${result.settingsName}` : "";
+    logStatus(`${statusMessage}${name}.`, "success");
   } catch (error) {
-    logStatus(error.message, "error");
+    const message = getFriendlyErrorMessage(error, "Failed to test ESPN connection.");
+    logStatus(message, "error");
+    if (error.hint && error.hint !== message) {
+      logStatus(error.hint, "info");
+    }
     if (error.details) {
       console.error("Test connection details", error.details);
     }
@@ -236,22 +231,32 @@ async function handleFetch() {
     const { leagueId, season } = validateInputs();
     await storageSet({ leagueId, season });
     logStatus("Fetching league data from ESPN...");
-    const { normalized, summary } = await sendMessage({
+    const response = await sendMessage({
       type: "fetchData",
       leagueId,
       season,
       includeRaw: includeRawInput.checked
     });
+    const { normalized, summary } = response.data;
     currentNormalized = normalized;
     previewExpanded = false;
     renderPreview();
     updateActionButtons();
-    logStatus(`Fetched data. Teams: ${summary.teamCount}, players: ${summary.totalRosteredPlayers}, matchups: ${summary.matchupCount}.`, "success");
+    const statusMessage =
+      response.path === "content-script" ? "in-page fetch" : "cookie auth";
+    logStatus(
+      `Fetched data (${statusMessage}). Teams: ${summary.teamCount}, players: ${summary.totalRosteredPlayers}, matchups: ${summary.matchupCount}.`,
+      "success"
+    );
   } catch (error) {
     currentNormalized = null;
     renderPreview();
     updateActionButtons();
-    logStatus(error.message, "error");
+    const message = getFriendlyErrorMessage(error, "Failed to fetch data from ESPN.");
+    logStatus(message, "error");
+    if (error.hint && error.hint !== message) {
+      logStatus(error.hint, "info");
+    }
     if (error.details) {
       console.error("Fetch details", error.details);
     }
