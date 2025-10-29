@@ -122,9 +122,7 @@ function getStructuredErrorMessage(response) {
 }
 
 function logFailureDetails(failures) {
-  if (!Array.isArray(failures) || !failures.length) {
-    return;
-  }
+  if (!Array.isArray(failures) || !failures.length) return;
   failures.forEach((failure) => {
     const viewLabel = failure?.view ? `${failure.view}: ` : "";
     if (failure?.code === "HTTP_ERROR" && failure.status) {
@@ -132,7 +130,8 @@ function logFailureDetails(failures) {
       logStatus(`Failed ${viewLabel}HTTP ${failure.status}${statusText}`, "error");
       return;
     }
-    logStatus(`Failed ${viewLabel}${failure?.code || "UNKNOWN_ERROR"}`, "error");
+    const extra = failure?.message ? ` (${failure.message})` : "";
+    logStatus(`Failed ${viewLabel}${failure?.code || "UNKNOWN_ERROR"}${extra}`, "error");
   });
 }
 
