@@ -1,29 +1,26 @@
 // content.js
-// Handles leagueId detection and in-page ESPN API fetching.
-// Runs directly inside fantasy.espn.com so requests include your logged-in cookies.
+// Runs inside fantasy.espn.com (all frames). Uses page cookies automatically.
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
-      // --- League ID detection ---
+      // --- League ID detection from URL ---
       if (msg?.type === "detectLeagueId") {
         const match = String(location.href).match(/[?&#]leagueId=(\d+)/);
-        if (match) {
-          return sendResponse({ ok: true, leagueId: match[1] });
-        }
+        if (match) return sendResponse({ ok: true, leagueId: match[1] });
         return sendResponse({ ok: false, error: "NO_LEAGUE_ID" });
       }
 
-      // --- ESPN API fetch (used for Test + Fetch Data) ---
+      // --- JSON fetch from page context (includes cookies) ---
       if (msg?.type === "cs.fetchJson") {
         const urls = Array.isArray(msg.urls) ? msg.urls : [];
         const results = [];
 
         for (const urlString of urls) {
           try {
-            const parsed = new URL(urlString);
+            const parsed = new URL(String(urlString));
 
-            // ✅ Allow any path on fantasy.espn.com
+            // Allow any path on fantasy.espn.com (reject everything else)
             if (!/^https:\/\/fantasy\.espn\.com/i.test(parsed.origin)) {
               results.push({
                 ok: false,
@@ -50,17 +47,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               continue;
             }
 
-            const data = await res.json().catch(() => null);
+            let data = null;
+            try { data = await res.json(); } catch {}
             if (!data) {
-              results.push({
-                ok: false,
-                code: "PARSE_ERROR",
-                url: urlString
-              });
+              results.push({ ok: false, code: "PARSE_ERROR", url: urlString });
               continue;
             }
 
-            results.push({ ok: true, data, url: urlString });
+            results.push({ ok: true, data, url: urlString, path: "content-script" });
           } catch (e) {
             results.push({
               ok: false,
@@ -74,13 +68,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return sendResponse({ ok: true, results, path: "content-script" });
       }
 
+      return sendResponse({ ok: false, code: "UNKNOWN_REQUEST" });
     } catch (e) {
-      sendResponse({
-        ok: false,
-        code: "UNEXPECTED",
-        message: String(e)
-      });
+      return sendResponse({ ok: false, code: "UNEXPECTED", message: String(e) });
     }
   })();
-  return true; // keeps channel open for async responses
+  return true; // async
 });
