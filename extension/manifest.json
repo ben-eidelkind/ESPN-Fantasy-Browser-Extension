@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ESPN Fantasy Exporter (Supabase)",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Export your ESPN Fantasy Football data to Supabase or download JSON.",
   "action": { "default_title": "ESPN Fantasy Exporter", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
