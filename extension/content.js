@@ -1,88 +1,86 @@
-// Handles in-page league detection and ESPN API fetches.
+// content.js
+// Handles leagueId detection and in-page ESPN API fetching.
+// Runs directly inside fantasy.espn.com so requests include your logged-in cookies.
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
-      if (!msg || typeof msg !== "object" || typeof msg.type !== "string") {
-        sendResponse({ ok: false, code: "BAD_MESSAGE", message: "Invalid request." });
-        return;
-      }
-
-      if (msg.type === "detectLeagueId") {
+      // --- League ID detection ---
+      if (msg?.type === "detectLeagueId") {
         const match = String(location.href).match(/[?&#]leagueId=(\d+)/);
         if (match) {
-          sendResponse({ ok: true, leagueId: match[1] });
-        } else {
-          sendResponse({ ok: false, code: "NO_LEAGUE_ID" });
+          return sendResponse({ ok: true, leagueId: match[1] });
         }
-        return;
+        return sendResponse({ ok: false, error: "NO_LEAGUE_ID" });
       }
 
-      if (msg.type === "cs.fetchJson") {
-        if (!Array.isArray(msg.urls)) {
-          sendResponse({ ok: false, code: "BAD_MESSAGE", message: "Missing URLs." });
-          return;
-        }
-
+      // --- ESPN API fetch (used for Test + Fetch Data) ---
+      if (msg?.type === "cs.fetchJson") {
+        const urls = Array.isArray(msg.urls) ? msg.urls : [];
         const results = [];
-        for (const rawUrl of msg.urls) {
-          const urlString = String(rawUrl || "");
-          let parsed;
+
+        for (const urlString of urls) {
           try {
-            parsed = new URL(urlString);
-          } catch (err) {
-            results.push({ ok: false, code: "INVALID_URL", message: String(err), url: urlString });
-            continue;
-          }
+            const parsed = new URL(urlString);
 
-          if (parsed.origin !== location.origin) {
-            results.push({
-              ok: false,
-              code: "CROSS_ORIGIN",
-              message: "URL origin mismatch",
-              url: urlString
-            });
-            continue;
-          }
-
-          try {
-            const response = await fetch(parsed.toString(), {
-              credentials: "include",
-              headers: {
-                Accept: "application/json"
-              }
-            });
-
-            if (!response.ok) {
+            // ✅ Allow any path on fantasy.espn.com
+            if (!/^https:\/\/fantasy\.espn\.com/i.test(parsed.origin)) {
               results.push({
                 ok: false,
-                code: "HTTP_ERROR",
-                status: response.status,
-                statusText: response.statusText,
+                code: "CROSS_ORIGIN",
+                message: "URL origin not fantasy.espn.com",
                 url: urlString
               });
               continue;
             }
 
-            try {
-              const data = await response.json();
-              results.push({ ok: true, data, url: urlString });
-            } catch (parseError) {
-              results.push({ ok: false, code: "PARSE_ERROR", url: urlString });
+            const res = await fetch(parsed.toString(), {
+              credentials: "include",
+              headers: { "Accept": "application/json" }
+            });
+
+            if (!res.ok) {
+              results.push({
+                ok: false,
+                code: "HTTP_ERROR",
+                status: res.status,
+                statusText: res.statusText,
+                url: urlString
+              });
+              continue;
             }
-          } catch (fetchError) {
-            results.push({ ok: false, code: "NETWORK_ERROR", message: String(fetchError), url: urlString });
+
+            const data = await res.json().catch(() => null);
+            if (!data) {
+              results.push({
+                ok: false,
+                code: "PARSE_ERROR",
+                url: urlString
+              });
+              continue;
+            }
+
+            results.push({ ok: true, data, url: urlString });
+          } catch (e) {
+            results.push({
+              ok: false,
+              code: "NETWORK_ERROR",
+              message: String(e),
+              url: urlString
+            });
           }
         }
 
-        sendResponse({ ok: true, results });
-        return;
+        return sendResponse({ ok: true, results, path: "content-script" });
       }
 
-      sendResponse({ ok: false, code: "UNKNOWN_REQUEST", message: `Unknown type: ${msg.type}` });
-    } catch (err) {
-      sendResponse({ ok: false, code: "UNEXPECTED_ERROR", message: String(err) });
+    } catch (e) {
+      sendResponse({
+        ok: false,
+        code: "UNEXPECTED",
+        message: String(e)
+      });
     }
   })();
-
-  return true;
+  return true; // keeps channel open for async responses
 });
