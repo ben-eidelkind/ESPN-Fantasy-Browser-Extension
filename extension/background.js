@@ -19,6 +19,8 @@ const STATUS_MESSAGES = {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const handler = async () => {
     switch (message.type) {
+      case "getEspnAuth":
+        return await getEspnAuth();
       case "testConnection":
         return await testConnection(message);
       case "fetchData":
@@ -31,7 +33,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   };
 
   handler()
-    .then((data) => sendResponse({ ok: true, data }))
+    .then((data) => {
+      if (message.type === "getEspnAuth") {
+        sendResponse(data);
+        return;
+      }
+      sendResponse({ ok: true, data });
+    })
     .catch((error) => {
       console.error("ESPN Fantasy Exporter error", error);
       sendResponse({
@@ -42,11 +50,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
   return true;
 });
-
-const COOKIE_PERMISSION = {
-  permissions: ["cookies"],
-  origins: ["https://*.espn.com/*"]
-};
 
 function withChromeCallback(fn) {
   return new Promise((resolve, reject) => {
@@ -61,45 +64,77 @@ function withChromeCallback(fn) {
   });
 }
 
-async function ensureCookiePermission() {
+async function ensureEspnPermission() {
+  const origins = ["https://*.espn.com/*"];
   const hasPermission = await withChromeCallback((cb) =>
-    chrome.permissions.contains(COOKIE_PERMISSION, cb)
+    chrome.permissions.contains({ origins }, cb)
   );
   if (hasPermission) {
     return true;
   }
   const granted = await withChromeCallback((cb) =>
-    chrome.permissions.request(COOKIE_PERMISSION, cb)
+    chrome.permissions.request({ origins }, cb)
   );
-  if (!granted) {
-    throw new Error("Cookie permission is required to read ESPN session tokens.");
-  }
-  return true;
+  return Boolean(granted);
 }
 
-async function getEspnCookie(name) {
+async function getCookieAnyDomain(name) {
   const cookies = await withChromeCallback((cb) =>
-    chrome.cookies.getAll({ domain: ".espn.com", name }, cb)
+    chrome.cookies.getAll({ name }, cb)
   );
-  return Array.isArray(cookies) && cookies.length ? cookies[0] : null;
+  if (!Array.isArray(cookies) || !cookies.length) {
+    return null;
+  }
+  const espnCookies = cookies.filter(
+    (cookie) => typeof cookie.domain === "string" && cookie.domain.includes("espn.com")
+  );
+  if (!espnCookies.length) {
+    return null;
+  }
+  const preferred = espnCookies.find(
+    (cookie) => cookie.domain === ".espn.com" || cookie.hostOnly === false
+  );
+  const selected = preferred || espnCookies[0];
+  return selected?.value || null;
 }
 
-async function getAuthCookies() {
-  await ensureCookiePermission();
-  const [swidCookie, espnCookie] = await Promise.all([
-    getEspnCookie("SWID"),
-    getEspnCookie("espn_s2")
+async function getEspnAuth() {
+  const hasPermission = await ensureEspnPermission();
+  if (!hasPermission) {
+    return { ok: false, code: "NO_PERMISSION" };
+  }
+
+  const [swid, s2] = await Promise.all([
+    getCookieAnyDomain("SWID"),
+    getCookieAnyDomain("espn_s2")
   ]);
-  if (!swidCookie || !swidCookie.value) {
-    throw new Error("Missing SWID cookie. Log in to ESPN and refresh the page.");
+
+  if (!swid || !s2) {
+    return {
+      ok: false,
+      code: "MISSING_COOKIES",
+      hint: "Log into https://www.espn.com/, then refresh your fantasy tab."
+    };
   }
-  if (!espnCookie || !espnCookie.value) {
-    throw new Error("Missing espn_s2 cookie. Log in to ESPN and refresh the page.");
+
+  return { ok: true, swid, s2 };
+}
+
+async function requireEspnAuth() {
+  const auth = await getEspnAuth();
+  if (auth.ok) {
+    return auth;
   }
-  return {
-    swid: swidCookie.value,
-    espn_s2: espnCookie.value
-  };
+
+  const error =
+    auth.code === "NO_PERMISSION"
+      ? new Error("Permission to read ESPN cookies is required.")
+      : new Error(auth.hint || "Missing ESPN authentication cookies.");
+  error.code = auth.code;
+  if (auth.hint) {
+    error.details = auth.hint;
+  }
+  throw error;
 }
 
 function buildEspnUrl(leagueId, season, views) {
@@ -143,11 +178,11 @@ async function fetchWithRetry(url, options, retries = 3, baseDelay = 400) {
 }
 
 async function fetchLeaguePayload(leagueId, season, includeViews = ESPN_VIEWS) {
-  const { swid, espn_s2 } = await getAuthCookies();
+  const { swid, s2 } = await requireEspnAuth();
   const url = buildEspnUrl(leagueId, season, includeViews);
   const response = await fetchWithRetry(url, {
     headers: {
-      Cookie: `SWID=${swid}; espn_s2=${espn_s2}`
+      Cookie: `SWID=${swid}; espn_s2=${s2}`
     },
     credentials: "include"
   });

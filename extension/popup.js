@@ -80,7 +80,8 @@ function storageSet(values) {
   });
 }
 
-function sendMessage(message) {
+function sendMessage(message, options = {}) {
+  const { raw = false } = options;
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
@@ -89,6 +90,10 @@ function sendMessage(message) {
       }
       if (!response) {
         reject(new Error("No response from background."));
+        return;
+      }
+      if (raw) {
+        resolve(response);
         return;
       }
       if (response.ok) {
@@ -190,9 +195,34 @@ async function handleTestConnection() {
   try {
     const { leagueId, season } = validateInputs();
     logStatus("Testing ESPN connection...");
+    const auth = await sendMessage({ type: "getEspnAuth" }, { raw: true });
+    if (!auth) {
+      logStatus("Unable to verify ESPN authentication cookies.", "error");
+      return;
+    }
+    if (!auth.ok) {
+      if (auth.code === "MISSING_COOKIES") {
+        logStatus(
+          "Missing SWID/espn_s2. Log into https://www.espn.com/ (top-right login), then refresh your fantasy page and try again.",
+          "error"
+        );
+        return;
+      }
+      if (auth.code === "NO_PERMISSION") {
+        logStatus("Permission needed. Click 'Allow' when prompted, then try again.", "error");
+        return;
+      }
+      if (auth.error) {
+        logStatus(auth.error, "error");
+        return;
+      }
+      logStatus("Unable to verify ESPN authentication cookies.", "error");
+      return;
+    }
+
     const result = await sendMessage({ type: "testConnection", leagueId, season });
     const name = result?.settingsName ? ` (League: ${result.settingsName})` : "";
-    logStatus(`Connection successful${name}.`, "success");
+    logStatus(`ESPN connection OK${name}.`, "success");
   } catch (error) {
     logStatus(error.message, "error");
     if (error.details) {
