@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ESPN Fantasy Exporter – Options</title>
+    <style>
+      body {
+        font-family: "Segoe UI", Tahoma, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: #f5f7fb;
+        color: #0b1f33;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin: 12px 0 4px;
+        font-weight: 600;
+      }
+      input,
+      textarea {
+        width: 100%;
+        padding: 8px;
+        border-radius: 4px;
+        border: 1px solid #c3c9d4;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      textarea {
+        min-height: 80px;
+      }
+      .actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 12px;
+      }
+      button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #155eab;
+        color: #fff;
+      }
+      button.secondary {
+        background: #e2e8f0;
+        color: #1f2937;
+      }
+      .status {
+        margin-top: 16px;
+        font-size: 13px;
+      }
+      .status.success {
+        color: #047857;
+      }
+      .status.error {
+        color: #b91c1c;
+      }
+      .note {
+        font-size: 13px;
+        margin-top: 8px;
+        color: #4b5563;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Supabase Configuration</h1>
+    <p class="note">
+      Provide your Supabase project URL and anon key (Row Level Security should be enabled). The
+      table defaults to <code>espn_syncs</code>.
+    </p>
+    <label for="supabaseUrl">Supabase Project URL</label>
+    <input type="text" id="supabaseUrl" placeholder="https://your-project.supabase.co" />
+
+    <label for="supabaseAnonKey">Supabase anon key</label>
+    <textarea id="supabaseAnonKey" placeholder="eyJhbGciOiJI..."></textarea>
+
+    <label for="supabaseTable">Table name</label>
+    <input type="text" id="supabaseTable" placeholder="espn_syncs" />
+
+    <div class="actions">
+      <button id="saveButton" class="primary">Save</button>
+      <button id="resetButton" class="secondary">Reset Storage</button>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>
