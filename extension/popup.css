@@ -1,0 +1,144 @@
+:root {
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: #0b1f33;
+  background: #f5f7fb;
+}
+
+body {
+  margin: 0;
+  min-width: 340px;
+}
+
+main {
+  padding: 16px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 12px 0;
+}
+
+h2 {
+  font-size: 14px;
+  margin: 12px 0 8px;
+}
+
+.field-group {
+  margin-bottom: 12px;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+input[type="text"],
+input[type="number"],
+textarea {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #c3c9d4;
+  border-radius: 4px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+textarea[readonly],
+input[readonly] {
+  background: #eef1f7;
+  color: #334155;
+}
+
+button {
+  border: none;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  background: #155eab;
+  color: #fff;
+}
+
+button.secondary {
+  background: #e2e8f0;
+  color: #1f2937;
+}
+
+button.secondary:disabled,
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.link-button {
+  background: transparent;
+  color: #155eab;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.hint {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #4b5563;
+}
+
+.status-log {
+  min-height: 60px;
+  max-height: 140px;
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #d8dee9;
+  border-radius: 4px;
+  padding: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.status-log .entry {
+  margin-bottom: 6px;
+}
+
+.status-log .entry.error {
+  color: #b91c1c;
+}
+
+.status-log .entry.success {
+  color: #065f46;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#jsonPreview {
+  background: #0f172a;
+  color: #f8fafc;
+  padding: 8px;
+  border-radius: 4px;
+  max-height: 160px;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+#jsonPreview.expanded {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.supabase .header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
