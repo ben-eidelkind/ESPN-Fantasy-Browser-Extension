@@ -1,5 +1,6 @@
 // content.js
 // Runs inside fantasy.espn.com (all frames). Uses page cookies automatically.
+// Provides leagueId detection + JSON fetch with credentials included.
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
